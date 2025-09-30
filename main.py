@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from prompts import system_prompt
 from call_function import call_function, available_functions
+from config import MAX_ITERS
 
 
 def main():
@@ -34,8 +35,22 @@ def main():
     messages = [
         types.Content(role="user", parts=[types.Part(text=user_prompt)]),
     ]
-    # Call the model and handle any function call responses.
-    generate_content(client, messages, verbose)
+
+    iters = 0
+    while True:
+        iters += 1
+        if iters > MAX_ITERS:
+            print(f"Maximum iterations ({MAX_ITERS}) reached.")
+            sys.exit(1)
+
+        try:
+            final_response = generate_content(client, messages, verbose)
+            if final_response:
+                print("Final response:")
+                print(final_response)
+                break
+        except Exception as e:
+            print(f"Error in generate_content: {e}")
 
 
 def generate_content(client, messages, verbose):
@@ -47,35 +62,33 @@ def generate_content(client, messages, verbose):
         ),
     )
     if verbose:
-        try:
-            print("Prompt tokens:", response.usage_metadata.prompt_token_count)
-            print("Response tokens:", response.usage_metadata.candidates_token_count)
-        except Exception:
-            pass
+        print("Prompt tokens:", response.usage_metadata.prompt_token_count)
+        print("Response tokens:", response.usage_metadata.candidates_token_count)
 
-    # If the model didn't call a function, just print the text response.
+    if response.candidates:
+        for candidate in response.candidates:
+            function_call_content = candidate.content
+            messages.append(function_call_content)
+
     if not response.function_calls:
-        if getattr(response, "text", None):
-            print(response.text)
-        return
+        return response.text
 
-    # For each function call, execute the mapped function and print its result.
+    function_responses = []
     for function_call_part in response.function_calls:
         function_call_result = call_function(function_call_part, verbose)
         if (
             not function_call_result.parts
             or not function_call_result.parts[0].function_response
         ):
-            continue
-        raw_resp = function_call_result.parts[0].function_response.response
-        if isinstance(raw_resp, dict) and "result" in raw_resp:
-            result_text = raw_resp["result"]
-        else:
-            result_text = raw_resp
+            raise Exception("empty function call result")
+        if verbose:
+            print(f"-> {function_call_result.parts[0].function_response.response}")
+        function_responses.append(function_call_result.parts[0])
 
-        # Print function result to stdout so harnesses see test summaries.
-        if result_text is not None:
-            print(result_text)
+    if not function_responses:
+        raise Exception("no function responses generated, exiting.")
+
+    messages.append(types.Content(role="user", parts=function_responses))
 
 
 if __name__ == "__main__":
